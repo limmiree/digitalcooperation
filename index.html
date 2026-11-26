@@ -200,6 +200,17 @@ button{cursor:pointer;border:0;background:none}
 body.demo #studentPaint{height:calc(100% - 48px);min-height:0}
 .sample-btn{margin-top:.5rem;width:100%;font-size:.9rem}
 .wait-box{padding:1rem 1.1rem;margin-bottom:1rem}
+.rooms{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem}
+.room{padding:.8rem;display:flex;flex-direction:column;gap:.5rem}
+.room .rthumb{aspect-ratio:4/3;background:#fff;border-radius:10px;overflow:hidden;display:grid;place-items:center;border:1px solid var(--line)}
+.room .rthumb img{max-width:100%;max-height:100%;display:block}
+.room h3{font-size:1.2rem;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.room .meta{font-size:.88rem;color:var(--muted)}
+.room .code{font-family:"Jua",sans-serif;font-size:1.5rem;letter-spacing:.08em;line-height:1}
+.room .row .btn{flex:1;min-height:40px;padding:.4em .6em}
+.rooms-empty{padding:2.4rem 1rem;text-align:center;color:var(--muted)}
+.find-row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:1.2rem 0 0;font-size:.9rem;color:var(--muted)}
+.find-row input{width:7em;padding:.5em;border-radius:10px;border:1px solid var(--line);background:var(--surface);text-align:center}
 .wait-box h3{font-size:1.2rem}
 .chips{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
 .chip{padding:.35em .75em;border-radius:999px;background:var(--surface2);border:1px solid var(--line);font-size:.9rem;min-height:36px}
@@ -247,19 +258,33 @@ body.demo #studentPaint{height:calc(100% - 48px);min-height:0}
       <button class="card role" id="goTeacher"><h2>선생님</h2><p>그림 올리기, 학생 수 정하기, 접속 현황 보기, 작품 합치기</p></button>
       <button class="card role" id="goStudent"><h2>학생</h2><p>방 번호와 내 번호로 들어가서 내 조각 색칠하기</p></button>
     </div>
-    <div class="row" style="justify-content:center;margin-top:1.4rem">
-      <input id="reopenCode" type="text" inputmode="numeric" maxlength="4" placeholder="방 번호" style="width:8em;padding:.6em;border-radius:10px;border:1px solid var(--line);background:var(--surface);text-align:center">
-      <button class="btn" id="reopenBtn">만든 방 다시 열기</button>
-    </div>
   </div>
 </section>
 
 <!-- 교사: 방 만들기 -->
+<section id="teacherRooms" class="screen" hidden>
+  <div class="page">
+    <div class="topbar">
+      <h1>내 색칠 방</h1>
+      <div class="row">
+        <button class="btn primary" id="newRoomBtn">새 방 만들기</button>
+        <button class="btn" data-go="home">처음으로</button>
+      </div>
+    </div>
+    <div class="rooms" id="roomList"></div>
+    <div class="find-row">
+      <span>목록에 없는 방(예전에 만든 방) 열기</span>
+      <input id="reopenCode" type="text" inputmode="numeric" maxlength="4" placeholder="방 번호">
+      <button class="btn" id="reopenBtn" style="min-height:40px;padding:.4em .9em">열기</button>
+    </div>
+  </div>
+</section>
+
 <section id="teacherSetup" class="screen" hidden>
   <div class="page">
     <div class="topbar">
       <h1>새 색칠 방 만들기</h1>
-      <button class="btn" data-go="home">처음으로</button>
+      <button class="btn" data-rooms>방 목록</button>
     </div>
     <div class="setup-grid">
       <div class="card setup-form">
@@ -316,7 +341,7 @@ body.demo #studentPaint{height:calc(100% - 48px);min-height:0}
       <h1 id="dashTitle">작품</h1>
       <div class="row">
         <button class="btn danger" id="deleteRoom">방 삭제</button>
-        <button class="btn" data-go="home">처음으로</button>
+        <button class="btn" data-rooms>방 목록</button>
       </div>
     </div>
     <div class="card dash-head">
@@ -606,9 +631,10 @@ function boot(){
   const q=new URLSearchParams(location.search);
   if(q.get('room')){ show('studentJoin'); $('#sCode').value=q.get('room'); findRoom(); }
   else show('home');
-  const last=ls('ct_last_room'); if(last) $('#reopenCode').value=last;
 }
-$('#goTeacher').onclick=async()=>{ if(await requireTeacher()) show('teacherSetup'); };
+$('#goTeacher').onclick=()=>showRooms();
+$$('[data-rooms]').forEach(b=>b.addEventListener('click',()=>showRooms()));
+$('#newRoomBtn').onclick=()=>{ cleanupListeners(); show('teacherSetup'); };
 $('#goStudent').onclick=()=>{ show('studentJoin'); $('#sCode').focus(); };
 $('#reopenBtn').onclick=async()=>{
   const code=$('#reopenCode').value.trim(); if(!code) return;
@@ -617,6 +643,45 @@ $('#reopenBtn').onclick=async()=>{
   if(!m){ toast('그 번호의 방이 없어요.'); return; }
   openDashboard(code, m);
 };
+
+/* ================= 교사: 방 목록 ================= */
+const IDX = () => db.ref('rooms/_index');
+function smallThumb(src){ return new Promise(res=>{ const i=new Image(); i.onload=()=>{ const sc=Math.min(1,240/Math.max(i.width,i.height)); const c=document.createElement('canvas'); c.width=Math.round(i.width*sc); c.height=Math.round(i.height*sc); const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height); x.drawImage(i,0,0,c.width,c.height); res(c.toDataURL('image/jpeg',0.8)); }; i.onerror=()=>res(''); i.src=src; }); }
+async function indexRoom(code, meta){
+  try{ const thumb=meta.thumb?await smallThumb(meta.thumb):'';
+    await IDX().child(code).update({title:meta.title||'', count:meta.count||0, createdAt:meta.createdAt||Date.now(), thumb}); }catch(e){ console.error(e); }
+}
+function fmtDate(t){ if(!t) return ''; const d=new Date(t); return `${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+async function showRooms(){
+  if(!(await requireTeacher())) return;
+  cleanupListeners(); T.code=null; setUrl(''); show('teacherRooms');
+  const box=$('#roomList'); box.innerHTML='<div class="rooms-empty">방 목록을 불러오는 중…</div>';
+  const ref=IDX();
+  const onV=ref.on('value',s=>renderRooms(s.val()||{}));
+  listeners.push(()=>ref.off('value',onV));
+}
+function renderRooms(idx){
+  const box=$('#roomList'); box.innerHTML='';
+  const list=Object.entries(idx).map(([code,v])=>({code,...v})).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  if(!list.length){ box.innerHTML='<div class="rooms-empty card" style="grid-column:1/-1">아직 만든 방이 없어요. "새 방 만들기"로 시작하세요.</div>'; return; }
+  list.forEach(r=>{
+    const c=document.createElement('div'); c.className='card room';
+    c.innerHTML=`<div class="rthumb">${r.thumb?`<img alt="" src="${r.thumb}">`:''}</div>
+      <h3>${esc(r.title||'제목 없음')}</h3>
+      <div class="row" style="justify-content:space-between;align-items:flex-end"><span class="code">${esc(r.code)}</span><span class="meta">${r.count||0}조각 · ${esc(fmtDate(r.createdAt))}</span></div>
+      <div class="row"><button class="btn primary" data-open>열기</button><button class="btn danger" data-del>삭제</button></div>`;
+    c.querySelector('[data-open]').onclick=async()=>{
+      const m=(await R(r.code,'meta').once('value')).val();
+      if(!m){ if(await ask(`${r.code}번 방의 내용이 이미 지워졌어요. 목록에서도 뺄까요?`,'빼기')) await IDX().child(r.code).remove(); return; }
+      openDashboard(r.code,m);
+    };
+    c.querySelector('[data-del]').onclick=async()=>{
+      if(!(await ask(`"${r.title}" (${r.code}번) 방과 학생 그림을 모두 삭제할까요? 되돌릴 수 없어요.`,'삭제'))) return;
+      await R(r.code).remove(); await IDX().child(r.code).remove(); toast('방을 삭제했어요.');
+    };
+    box.appendChild(c);
+  });
+}
 
 /* ================= 교사: 방 만들기 ================= */
 let srcImg=null, fullCv=null, rowsManual=false;
@@ -706,6 +771,7 @@ $('#createBtn').onclick=async()=>{
     tc.width=Math.round(W*ts); tc.height=Math.round(H*ts); tc.getContext('2d').drawImage(fullCv,0,0,tc.width,tc.height);
     const meta={ title:$('#titleIn').value.trim()||'우리 반 공동 작품', count:N, rows, W, H, rects, thumb:tc.toDataURL('image/png'), createdAt:TS() };
     await R(code,'meta').set(meta);
+    await indexRoom(code,{...meta,createdAt:Date.now()});
     for(let i=0;i<N;i++){
       const r=rects[i], c=document.createElement('canvas'); c.width=r.w; c.height=r.h;
       c.getContext('2d').drawImage(fullCv,r.x,r.y,r.w,r.h,0,0,r.w,r.h);
@@ -735,6 +801,7 @@ async function openDashboard(code, meta){
   ls('ct_last_room',code);
   setUrl('?teacher='+code);
   show('teacherDash');
+  IDX().child(code).once('value').then(s=>{ if(!s.exists()) indexRoom(code,meta); });
   $('#dashTitle').textContent=meta.title; $('#dashCode').textContent=code; $('#statTotal').textContent=meta.count;
   const url=location.origin+location.pathname+'?room='+code;
   $('#joinUrl').textContent=url;
@@ -845,6 +912,7 @@ async function resplit(N){
     busyMsg(`조각 만드는 중… ${i+1}/${N}`);
   }
   await R(T.code,'meta').update({count:N,rows,rects,splitId});
+  await IDX().child(T.code).update({count:N});
   return splitId;
 }
 async function assignAll(list, splitId){
@@ -918,7 +986,7 @@ $('#copyUrl').onclick=async()=>{ try{ await navigator.clipboard.writeText($('#jo
 $('#deleteRoom').onclick=async()=>{
   if(!(await ask('이 방과 모든 학생 그림을 삭제할까요? 되돌릴 수 없어요.'))) return;
   if(!(await ask('정말 삭제할까요? 먼저 "하나로 합치기"에서 그림 파일로 저장해 두세요.'))) return;
-  cleanupListeners(); await R(T.code).remove(); toast('방을 삭제했어요.'); setUrl(''); T.code=null; show('home');
+  cleanupListeners(); const dc=T.code; await R(dc).remove(); await IDX().child(dc).remove(); toast('방을 삭제했어요.'); T.code=null; showRooms();
 };
 
 /* ================= 학생: 입장 ================= */
@@ -1201,6 +1269,7 @@ function makeFakeDb(){
     path=parts(path).join('/');
     return {
       key:parts(path).pop(),
+      child(k){ return ref(path+'/'+k); },
       once(){ return Promise.resolve(snap(path,get(path))); },
       set(v){ put(path,v); notify(path); return Promise.resolve(); },
       update(o){ for(const k in o) put(path+'/'+k,o[k]); notify(path); return Promise.resolve(); },
@@ -1305,9 +1374,9 @@ $('#dmTeacher').onclick=async()=>{
   if(!(await requireTeacher())) return;
   await leavePainting();
   const code=T.code||S.code; S.idx=null;
-  if(!code){ show('teacherSetup'); return; }
+  if(!code){ showRooms(); return; }
   const m=(await R(code,'meta').once('value')).val();
-  if(m) openDashboard(code,m); else show('teacherSetup');
+  if(m) openDashboard(code,m); else showRooms();
 };
 $('#dmStudent').onclick=async()=>{
   const code=T.code||S.code;
