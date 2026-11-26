@@ -656,9 +656,25 @@ async function showRooms(){
   if(!(await requireTeacher())) return;
   cleanupListeners(); T.code=null; setUrl(''); show('teacherRooms');
   const box=$('#roomList'); box.innerHTML='<div class="rooms-empty">방 목록을 불러오는 중…</div>';
-  const ref=IDX();
-  const onV=ref.on('value',s=>renderRooms(s.val()||{}));
-  listeners.push(()=>ref.off('value',onV));
+  const ref=IDX(); let got=false;
+  const timer=setTimeout(()=>{ if(!got) box.innerHTML='<div class="rooms-empty card" style="grid-column:1/-1">방 목록을 불러오지 못했어요. 인터넷 연결과 Firebase 규칙(rooms 읽기 허용)을 확인한 뒤 새로고침해 주세요.</div>'; },10000);
+  const onV=ref.on('value',s=>{ got=true; clearTimeout(timer); const idx=s.val()||{}; renderRooms(idx); if(!backfilled){ backfilled=true; backfillRooms(idx); } },
+    err=>{ got=true; clearTimeout(timer); console.error(err); box.innerHTML='<div class="rooms-empty card" style="grid-column:1/-1">방 목록을 읽을 권한이 없어요. Firebase Realtime Database 규칙에 rooms 읽기·쓰기가 허용돼 있는지 확인해 주세요.</div>'; });
+  listeners.push(()=>{ clearTimeout(timer); ref.off('value',onV); });
+}
+/* 목록 기능 이전에 만든 방도 자동으로 목록에 넣기 */
+let backfilled=false;
+async function backfillRooms(idx){
+  if(DEMO||!firebaseConfig.databaseURL) return;
+  try{
+    const r=await fetch(firebaseConfig.databaseURL.replace(/\/$/,'')+'/rooms.json?shallow=true');
+    if(!r.ok) return;
+    const keys=Object.keys((await r.json())||{}).filter(k=>/^\d{4}$/.test(k)&&!idx[k]);
+    for(const code of keys){
+      const m=(await R(code,'meta').once('value')).val();
+      if(m) await indexRoom(code,m);
+    }
+  }catch(e){ console.error(e); }
 }
 function renderRooms(idx){
   const box=$('#roomList'); box.innerHTML='';
